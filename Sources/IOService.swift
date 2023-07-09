@@ -6,20 +6,16 @@ typealias InterestRate = Double
 
 struct IOService {
     
-    enum OutputType {
-        case error(error: ArgumentInputError)
-        case standard(message: Message)
+    struct Arguments {
+        let amount: Amount
+        let baseCurrency: Currency
+        let convertedCurrency: Currency
+        let interestRate: InterestRate
     }
     
-    enum ArgumentInputError: Error {
-        case wrongArgument(input: String)
-        
-        var localizedDescription: String {
-            switch self {
-            case .wrongArgument(input: let message):
-                return "Wrong argument format:\(message), example: \"150 usd eur 5.0\" or \"150 usd eur\""
-            }
-        }
+    enum OutputType {
+        case error(error: ExRateError)
+        case standard(message: Message)
     }
     
     private enum Instruction {
@@ -31,6 +27,20 @@ struct IOService {
                            """
     }
     
+    private enum ProgramStartType {
+        static let withoutArgument = 1
+        static let withHelp = 2
+        static let withoutInterestRate = 4
+        static let withInterestRate = 5
+    }
+    
+    private enum CommonInputs {
+        static let help = "--help"
+        static let shortHelp = "-h"
+        static let newTransaction = "new"
+        static let exit = "exit"
+    }
+    
     static let shared = IOService()
     private init() {}
     
@@ -39,8 +49,7 @@ struct IOService {
         case .standard(let message):
             Logger.log(.debug(info: message))
         case .error(let error):
-            Logger.log(.error(info: error.localizedDescription))
-            printUsage()
+            Logger.log(.error(info: error.description))
         }
     }
     
@@ -49,32 +58,96 @@ struct IOService {
         Logger.log(.instruction(info: Instruction.usage))
     }
     
-    func readArguments() throws -> (amount: Amount, baseCurrency: Currency, convertedCurrency: Currency, interestRate: Double) {
+    func readArguments<T>() throws -> T? {
         let input = CommandLine.arguments
             .enumerated()
             .filter{ $0.offset > 0 }
             .map{ $0.element }
             .reduce("", {$0 + " " + $1})
         
-        if CommandLine.arguments.count == 4 {
+        switch CommandLine.arguments.count {
+        case ProgramStartType.withoutArgument:
+            return nil
+        case ProgramStartType.withHelp:
+            if CommandLine.arguments[1] == CommonInputs.shortHelp || CommandLine.arguments[1] == CommonInputs.help {
+                printUsage()
+                throw ProgrammedExit.exit
+            }
+            
+            throw ArgumentInputError.wrongArgument(input: input)
+        case ProgramStartType.withoutInterestRate:
             guard let amount = Amount(CommandLine.arguments[1]),
                 let baseCurrency = Currency(rawValue: CommandLine.arguments[2]),
                 let convertedCurrency = Currency(rawValue: CommandLine.arguments[3]) else {
                 throw ArgumentInputError.wrongArgument(input: input)
             }
             
-            return (amount: amount, baseCurrency: baseCurrency, convertedCurrency: convertedCurrency, interestRate: .zero)
-        } else if CommandLine.arguments.count == 5 {
+            return Arguments(amount: amount,
+                        baseCurrency: baseCurrency,
+                        convertedCurrency: convertedCurrency,
+                        interestRate: .zero) as? T
+        case ProgramStartType.withInterestRate:
             guard let amount = Amount(CommandLine.arguments[1]),
                 let baseCurrency = Currency(rawValue: CommandLine.arguments[2]),
                 let convertedCurrency = Currency(rawValue: CommandLine.arguments[3]),
-                let interestRate = Double(CommandLine.arguments[4]) else {
+                let interestRate = InterestRate(CommandLine.arguments[4]) else {
                 throw ArgumentInputError.wrongArgument(input: input)
             }
             
-            return (amount: amount, baseCurrency: baseCurrency, convertedCurrency: convertedCurrency, interestRate: interestRate)
+            return Arguments(amount: amount,
+                        baseCurrency: baseCurrency,
+                        convertedCurrency: convertedCurrency,
+                        interestRate: interestRate) as? T
+        default:
+            throw ArgumentInputError.wrongArgument(input: input)
+        }
+    }
+    
+    func readInput<T>(_ programState: ProgramState) throws -> T {
+        guard let input = readLine() else {throw InputError.wrongInput}
+        if input == CommonInputs.exit {
+            throw ProgrammedExit.exit
         }
         
-        throw ArgumentInputError.wrongArgument(input: input)
+        switch programState {
+        case .introduction:
+            if input == CommonInputs.newTransaction {
+                return ProgramState.insertAmount as! T
+            } else if input == CommonInputs.exit {
+                return ProgramState.exit as! T
+            } else {
+                throw InputError.wrongInput
+            }
+        case .insertAmount:
+            if let amount = Amount(input), amount is T {
+                return amount as! T
+            } else {
+                throw InputError.wrongAmount(input: input)
+            }
+        case .chooseBaseCurrency:
+            if let currency = Currency(rawValue: input), currency is T {
+                return currency as! T
+            } else {
+                throw InputError.wrongBaseCurrency(input: input)
+            }
+        case .chooseConvertedCurrency:
+            if let currency = Currency(rawValue: input), currency is T {
+                return currency as! T
+            } else {
+                throw InputError.wrongConvertedCurrency(input: input)
+            }
+        case .insertInterestRate:
+            if input.isEmpty {
+                return InterestRate(0.0) as! T
+            }
+            
+            if let rate = InterestRate(input), rate is T {
+                return rate as! T
+            } else {
+                throw InputError.wrongInterestRate(input: input)
+            }
+        default:
+            throw InputError.wrongInput
+        }
     }
 }
